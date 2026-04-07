@@ -1,91 +1,80 @@
 import numpy as np
 
-class SimpleFSMController:
-    """
-    Example FSM controller:
-    - States: 0 = explore, 1 = cluster
-    - Input: quantized neighbor count, quantized cue value
-    """
-
-    def __init__(
-        self,
-        neighbor_bins=(0, 3, 6, 999),
-        cue_bins=(0.0, 0.3, 0.7, 1e6),
-        max_step=0.1,
-    ):
+class CueFSMController:
+    def __init__(self, max_step=0.1):
         self.max_step = max_step
-        self.neighbor_bins = neighbor_bins
-        self.cue_bins = cue_bins
 
-        # Per-agent internal states
-        self.states = {}  # agent_id -> int state
-
-    # ------------- public entry point ------------- #
     def step(self, agent_id, obs, rng):
-        # Ensure agent has a state
-        if agent_id not in self.states:
-            self.states[agent_id] = 0  # start in "explore"
+        cue = obs["cue_value"]
 
-        state = self.states[agent_id]
+        if cue < 0.4:
+            # STRONG exploration (outer)
+            step_size = self.max_step
+            turn_delta = rng.normal(0, 0.02)   # very straight
 
-        # Read local observations
+        else:
+            # STRONG trapping (center)
+            step_size = self.max_step * 0.3    # slow down
+            turn_delta = rng.normal(0, 1.5)    # very random
+
+        return {"step_size": step_size, "turn_delta": turn_delta}
+
+class NeighborFSMController:
+    """
+    True 2-state FSM from paper:
+    - n >= t0 → cluster (Brownian)
+    - n < t1 → explore (straight)
+    """
+    def __init__(self, max_step=0.1):
+        self.max_step = max_step
+
+        # Critical thresholds (from paper-like behavior)
+        self.t0 = 4   # enter cluster
+        self.t1 = 1   # leave cluster
+
+        # Internal state per agent
+        self.state = {}
+
+    def step(self, agent_id, obs, rng):
         n = obs["neighbor_count"]
-        c = obs["cue_value"]
 
-        n_q = self._quantize_neighbors(n)
-        c_q = self._quantize_cue(c)
+        if agent_id not in self.state:
+            self.state[agent_id] = "explore"
 
-        # FSM transition
-        new_state = self._transition(state, n_q, c_q, rng)
-        self.states[agent_id] = new_state
+        # --- FSM transitions ---
+        if self.state[agent_id] == "explore" and n >= self.t0:
+            self.state[agent_id] = "cluster"
 
-        # Output motion parameters based on new_state
-        step_size, dtheta = self._output(new_state, rng)
-        return {"step_size": step_size, "turn_delta": dtheta}
+        elif self.state[agent_id] == "cluster" and n <= self.t1:
+            self.state[agent_id] = "explore"
 
-    # ------------- helper methods ------------- #
-    def _quantize_neighbors(self, n):
-        # returns bin index 0,1,2,...
-        for i in range(len(self.neighbor_bins) - 1):
-            if self.neighbor_bins[i] <= n < self.neighbor_bins[i + 1]:
-                return i
-        return len(self.neighbor_bins) - 2
+        # --- Behavior ---
+        if self.state[agent_id] == "explore":
+            # Lévy-like (straight)
+            step_size = self.max_step
+            turn_delta = rng.normal(0, 0.05)
 
-    def _quantize_cue(self, c):
-        for i in range(len(self.cue_bins) - 1):
-            if self.cue_bins[i] <= c < self.cue_bins[i + 1]:
-                return i
-        return len(self.cue_bins) - 2
-
-    def _transition(self, state, n_q, c_q, rng):
-        """
-        Example rules:
-        - if few neighbors and low cue -> explore
-        - if many neighbors or high cue -> cluster
-        """
-        if state == 0:  # explore
-            if n_q >= 2 or c_q >= 2:
-                # with some probability, switch to cluster
-                if rng.random() < 0.7:
-                    return 1
-            return 0
-        elif state == 1:  # cluster
-            if n_q == 0 and c_q == 0:
-                # leave cluster if isolated and in low cue
-                if rng.random() < 0.5:
-                    return 0
-            return 1
         else:
-            return 0
+            # Brownian (stay)
+            step_size = self.max_step
+            turn_delta = rng.normal(0, 1.0)
 
-    def _output(self, state, rng):
-        if state == 0:  # explore: larger turns, larger steps
-            step = self.max_step
-            dtheta = rng.normal(0.0, 0.6)
-        elif state == 1:  # cluster: smaller steps, smaller turns
-            step = 0.3 * self.max_step
-            dtheta = rng.normal(0.0, 0.1)
+        return {"step_size": step_size, "turn_delta": turn_delta}
+    
+class HeteroFSMController:
+    def __init__(self, max_step=0.1, cue_ratio=0.4, n_agents=200):
+        self.max_step = max_step
+        self.cue_ratio = cue_ratio
+
+        self.cue_controller = CueFSMController(max_step=max_step)
+        self.neigh_controller = NeighborFSMController(max_step=max_step)
+
+        rng = np.random.default_rng(0)
+        self.is_cue_type = rng.random(n_agents) < cue_ratio
+
+    def step(self, agent_id, obs, rng):
+        if self.is_cue_type[agent_id]:
+            return self.cue_controller.step(agent_id, obs, rng)
         else:
-            step = self.max_step
-            dtheta = rng.normal(0.0, 0.6)
-        return step, dtheta
+            return self.neigh_controller.step(agent_id, obs, rng)
+

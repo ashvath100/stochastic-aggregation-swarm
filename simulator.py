@@ -223,7 +223,7 @@ if __name__ == "__main__":
         rng_seed=42,
     )
 
-    plt.ion()
+    #plt.ion()
     fig, ax = plt.subplots(figsize=(5, 5))
 
     for t in range(500):
@@ -234,7 +234,7 @@ if __name__ == "__main__":
         ax.set_ylim(0, sim.H)
         ax.scatter(pos[:, 0], pos[:, 1], s=10, alpha=0.7)
         ax.set_title(f"t = {t}")
-        plt.pause(0.01)
+        #plt.pause(0.01)
 
-    plt.ioff()
-    plt.show()
+    #plt.ioff()
+    #plt.show()
